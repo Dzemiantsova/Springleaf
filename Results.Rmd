@@ -1,0 +1,217 @@
+---
+title: "Kaggle: Springleaf Marketing Response"
+author: "Liudmila Dzemiantsova"
+date: "October 8, 2015"
+output: html_document
+---
+
+**Description**
+
+The Website of the Kaggle competition is https://www.kaggle.com/c/springleaf-marketing-response.
+Springleaf puts the humanity back into lending by offering their customers personal and auto loans that help them take control of their lives and their finances. Direct mail is one important way Springleaf's team can connect with customers whom may be in need of a loan. In order to improve their targeted efforts, Springleaf must be sure they are focusing on the customers who are likely to respond and be good candidates for their services. 
+
+**Task**
+
+Using a large set of anonymized features, Springleaf is asking you to predict which customers will respond to a direct mail offer. Submissions are evaluated on area under the ROC curve between the predicted probability and the observed target. 
+
+**Programming and Software**
+
+The prediction model is written with R v.3.2.1 using RStudio v.0.99.484
+
+**Libraries**
+
+```{r}
+source("makePrediction.R")
+source("mapStates.R")
+source("multiplot.R")
+source("makePlot.R")
+```
+
+```{r, echo=FALSE}
+library(GGally)
+library(doParallel)
+library(caTools)
+library(pROC)
+library(caret)
+library(maptools)
+library(maps)
+library(readr)
+library(corrplot)
+```
+
+**Read the training data**
+
+```{r}
+registerDoParallel(cores=1)
+training <- read_csv("train.csv")
+```
+
+**Unbalanced target**
+
+```{r}
+training <- training[,-1]
+target <- training[,1933]
+training <- training[,-1933]
+dim(training)
+for (i in 1:length(target)) ifelse(target[i] == 0, target[i] <- "no", target[i] <- "yes")
+target <- as.factor(target)
+df <- data.frame(table(target))
+colnames(df) <- c('Target','Freq')
+df$Perc <- df$Freq / sum(df$Freq) * 100
+df
+```
+
+**Splitting the data**
+
+Since the training data is almost 1 GB and the used RAM is 4 GB, I first build a model on 10% of the training data. The rest 90% of the data is used for the validation.
+```{r}
+set.seed(123)
+inTrain <- createDataPartition(y = target, p = 0.1, list = FALSE)
+validation <- training[-inTrain,]
+training <- training[inTrain,]
+target.train <- target[inTrain]
+target.valid <- target[-inTrain]
+```
+
+**Cleaning the data**
+
+```{r}
+training[training==""] = NA
+training[training=="[]"] = NA
+training[training=="-1"] = NA
+training[training==-1] = NA
+training[training==-99999] = NA
+training[training==999999999] = NA
+training[training==999999998] = NA
+training[training==999999997] = NA
+training[training==999999996] = NA
+training[training==9999] = NA
+training[training==9998] = NA
+training[training==9997] = NA
+training[training==9996] = NA
+```
+
+**Exploring the data using plots**
+
+```{r}
+qplot(as.factor(VAR_0332),data=training,fill=target.train, main="                  Loan Distribution Per Year In The USA                  ", xlab="Year", ylab="Counts")
+mapStates(training, "VAR_0274")
+```
+
+**Pre-processing the data**
+
+```{r}
+load("mostlyData.rda")
+training<-training[,mostlyData]
+load("zeroTrain.rda")
+training <- training[, -zeroTrain]
+
+training_numr = training[, sapply(training, is.numeric)]
+training_char = training[, sapply(training, is.character)]
+rm(training)
+for(i in 1:(dim(training_char)[2])){
+    training_char[,i] <- as.integer(as.factor(training_char[,i]))
+}
+training_numr <- data.frame(training_numr, training_char)
+rm(training_char)
+```
+
+I remove those predictors that result in absolute pairwise correlation greater than a threshold of 0.9.
+```{r}
+set.seed(333)
+training_samp = training_numr[,sample(1:ncol(training_numr),25)]
+makePlot(training_samp, 1)
+rm(training_samp)
+
+load("highCorr.rda")
+training_numr <- training_numr[, -highCorr]
+```
+
+Last, the predictor variables are centered and scaled.
+```{r}
+load("xTrans.rda")
+training_numr<- predict(xTrans, training_numr)
+```
+
+**Building supervised lerning models**
+
+I use different supervised lerning methods: 
+
+1) extreme gradient boosting (xgb)
+
+```{r}
+load("xgbFit.rda")
+print(xgbFit)
+```
+
+2) random forest (rf)
+```{r}
+load("rfFit.rda")
+print(rfFit)
+```
+
+3) k-nearest neighbors (knn)
+```{r}
+load("knnFit.rda")
+print(knnFit$finalModel)
+```
+
+**Makeing predictions**
+
+To estimate the efficiency of different models, I make predictions for 10% of the validation data, and compare the results with true targets.
+
+```{r}
+set.seed(567)
+inValid <- createDataPartition(y = target.valid, p = 0.1, list = FALSE)
+validation <- validation[inValid,]
+target.valid <- target.valid[inValid]
+set.seed(7)
+predictions.xgb <- makePrediction(validation, xgbFit, "none")
+set.seed(7)
+predictions.rf <- makePrediction(validation, rfFit, "none")
+set.seed(7)
+predictions.knn <- makePrediction(validation, knnFit, "none")
+
+set.seed(7)
+predictions.xgb.prob <- makePrediction(validation, xgbFit, "prob")
+set.seed(7)
+predictions.rf.prob <- makePrediction(validation, rfFit$finalModel, "prob")
+set.seed(7)
+predictions.knn.prob <- makePrediction(validation, knnFit$finalModel, "prob")
+```
+
+**ROC curves**
+
+```{r}
+ROC.xgb <- roc(predictor = predictions.xgb.prob[,"yes"], response = target.valid, levels = rev(levels(target.valid)))
+ROC.rf <- roc(predictor = predictions.rf.prob[,"yes"], response = target.valid, levels = rev(levels(target.valid)))
+ROC.knn <- roc(predictor = predictions.knn.prob[,"yes"], response = target.valid, levels = rev(levels(target.valid)))
+
+plot(ROC.xgb, type = "S", col = "red", print.thres = .5)
+plot(ROC.rf, add = T, col = "green")
+plot(ROC.knn, add = T, col = "blue")
+legend("bottomright",c("xgb","rf","knn"), lwd=c(2.5,2.5,2.5), col=c("red","green", "blue"))
+```
+
+**The best model**
+
+```{r}
+xgb.model <- data.frame(model ="xgb", "error"=mean(predictions.xgb != target.valid), "auc"=ROC.xgb$auc)
+rf.model <- data.frame(model = "rf", "error"=mean(predictions.rf != target.valid), "auc"=ROC.rf$auc)
+knn.model <- data.frame(model = "knn", "error"=mean(predictions.knn != target.valid), "auc"=ROC.knn$auc)
+all.model <- rbind(xgb.model, rf.model, knn.model)
+all.model
+```
+
+**Most important predictors**
+
+```{r}
+valImp <- varImp(rfFit, scale = TRUE)
+plot(valImp, top = 10)
+training.plot <- data.frame(training_numr, target=target.train)
+makePlot(training.plot, 2)
+rm(training.plot)
+```
+
+
+
