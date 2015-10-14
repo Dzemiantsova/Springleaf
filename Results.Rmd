@@ -22,9 +22,9 @@ The prediction model is written with R v.3.2.1 using RStudio v.0.99.484
 
 ```{r}
 source("makePrediction.R")
-source("mapStates.R")
 source("multiplot.R")
 source("makePlot.R")
+source("mapStates.R")
 ```
 
 ```{r, echo=FALSE}
@@ -102,8 +102,20 @@ mapStates(training, "VAR_0274")
 
 ```{r}
 load("mostlyData.rda")
+if (file.exists("mostlyData.rda")) {
+  load("mostlyData.rda")
+} else {
+  mostlyData<-apply(!is.na(training),2,sum)>(dim(training)[1]-1)
+  save(mostlyData, file="mostlyData.rda")
+}
 training<-training[,mostlyData]
-load("zeroTrain.rda")
+
+if (file.exists("zeroTrain.rda")) {
+  load("zeroTrain.rda")
+} else {
+  zeroTrain <- nearZeroVar(training)
+  save(zeroTrain, file="zeroTrain.rda")
+}
 training <- training[, -zeroTrain]
 
 training_numr = training[, sapply(training, is.numeric)]
@@ -123,13 +135,24 @@ training_samp = training_numr[,sample(1:ncol(training_numr),25)]
 makePlot(training_samp, 1)
 rm(training_samp)
 
-load("highCorr.rda")
+if (file.exists("highCorr.rda")) {
+  load("highCorr.rda")
+} else {
+  Corr <- cor(training_numr, method = "pearson")
+  highCorr <- findCorrelation(Corr, 0.9)
+  save(highCorr, file="highCorr.rda")
+}
 training_numr <- training_numr[, -highCorr]
 ```
 
 Last, the predictor variables are centered and scaled.
 ```{r}
-load("xTrans.rda")
+if (file.exists("xTrans.rda")) {
+  load("xTrans.rda")
+} else {
+  xTrans <- preProcess(training_numr)
+  save(xTrans, file="xTrans.rda")
+}
 training_numr<- predict(xTrans, training_numr)
 ```
 
@@ -140,19 +163,37 @@ I use different supervised lerning methods:
 1) extreme gradient boosting (xgb)
 
 ```{r}
-load("xgbFit.rda")
+set.seed(1)
+cvControl <- trainControl(method = "repeatedcv", repeats=5, summaryFunction = twoClassSummary, classProbs = TRUE)
+if (file.exists("xgbFit.rda")) {
+  load("xgbFit.rda")
+} else {
+  xgbFit <- train(training_numr, target, method = "xgbTree", metric = "ROC", trControl = cvControl)
+  save(xgbFit, file="xgbFit.rda")
+}
 print(xgbFit)
 ```
 
 2) random forest (rf)
 ```{r}
-load("rfFit.rda")
+if (file.exists("rfFit.rda")) {
+  load("rfFit.rda")
+} else {
+  rfFit <- train(training_numr, target.train, method = "rf", metric = "ROC", trControl = cvControl)
+  save(rfFit, file="rfFit.rda")
+}
 print(rfFit)
 ```
 
 3) k-nearest neighbors (knn)
 ```{r}
-load("knnFit.rda")
+knnGrid <- expand.grid(.k=c(1:10))
+if (file.exists("knnFit.rda")) {
+  load("knnFit.rda")
+} else {
+  rfFit <- train(training_numr, target.train, method = "knn", metric = "ROC", trControl = cvControl, tuneGrid = knnGrid)
+  save(knnFit, file="knnFit.rda")
+}
 print(knnFit$finalModel)
 ```
 
